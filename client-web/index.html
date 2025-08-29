@@ -1,0 +1,141 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>YT Sync – Web Test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    .row { display:flex; gap:8px; margin-bottom:8px; align-items:center; }
+    input, button { padding:8px; }
+    #log { height: 140px; overflow:auto; background:#f5f5f5; padding:8px; }
+  </style>
+  <script src="https://www.youtube.com/iframe_api"></script>
+</head>
+<body>
+  <h2>YT Sync – Web Test</h2>
+
+  <div class="row">
+    <label>WS URL:</label>
+    <input id="wsurl" size="40" value="ws://localhost:8000/ws/demo-room" />
+    <button id="connectBtn">Connect</button>
+  </div>
+
+  <div class="row">
+    <label>Playlist JSON:</label>
+    <textarea id="playlistJson" rows="3" cols="80">[
+  {"videoId":"dQw4w9WgXcQ", "title":"Never Gonna Give You Up"},
+  {"videoId":"9bZkp7q19f0", "title":"Gangnam Style"}
+]</textarea>
+    <button id="setPlaylistBtn">SET_PLAYLIST</button>
+  </div>
+
+  <div class="row">
+    <button id="playBtn">PLAY</button>
+    <button id="pauseBtn">PAUSE</button>
+    <button id="prevBtn">PREV</button>
+    <button id="nextBtn">NEXT</button>
+    <label>Seek(s):</label><input id="seekInput" value="60" size="6" />
+    <button id="seekBtn">SEEK</button>
+  </div>
+
+  <div id="player" style="width:640px;height:360px;background:#000"></div>
+
+  <h4>Log</h4>
+  <div id="log"></div>
+
+<script>
+let ws, player, state = null;
+
+function log(...a){ const el = document.getElementById('log'); el.innerText += a.join(' ') + "\n"; el.scrollTop = el.scrollHeight; }
+
+document.getElementById('connectBtn').onclick = () => {
+  const url = document.getElementById('wsurl').value.trim();
+  ws = new WebSocket(url);
+  ws.onopen = () => log("WS connected");
+  ws.onclose = () => log("WS closed");
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === "STATE") {
+      state = msg.data;
+      log("STATE index=", state.index, "playing=", state.is_playing);
+      loadCurrentVideo();
+      if (!state.is_playing) player.pauseVideo();
+    } else if (msg.type === "PLAY") {
+      const { index, seek_offset, play_start_server_time } = msg.data;
+      ensureVideoIndex(index);
+      seekToExpected(seek_offset, play_start_server_time);
+      player.playVideo();
+    } else if (msg.type === "PAUSE") {
+      player.pauseVideo();
+      player.seekTo(msg.data.seek_offset, true);
+    } else if (msg.type === "SEEK") {
+      const { seek_offset, play_start_server_time } = msg.data;
+      player.seekTo(seek_offset, true);
+      if (play_start_server_time != null) player.playVideo();
+    } else if (msg.type === "PONG") {
+      // noop
+    }
+  };
+};
+
+document.getElementById('setPlaylistBtn').onclick = () => {
+  const txt = document.getElementById('playlistJson').value;
+  const list = JSON.parse(txt);
+  ws.send(JSON.stringify({type:"SET_PLAYLIST", playlist:list}));
+};
+
+document.getElementById('playBtn').onclick  = () => ws.send(JSON.stringify({type:"PLAY"}));
+document.getElementById('pauseBtn').onclick = () => ws.send(JSON.stringify({type:"PAUSE"}));
+document.getElementById('nextBtn').onclick  = () => ws.send(JSON.stringify({type:"NEXT"}));
+document.getElementById('prevBtn').onclick  = () => ws.send(JSON.stringify({type:"PREV"}));
+document.getElementById('seekBtn').onclick  = () => {
+  const s = parseFloat(document.getElementById('seekInput').value||"0");
+  ws.send(JSON.stringify({type:"SEEK", seconds:s}));
+};
+
+function ensureVideoIndex(i) {
+  if (!state || state.index !== i) {
+    state.index = i;
+    loadCurrentVideo();
+  }
+}
+
+function loadCurrentVideo() {
+  if (!state || !state.playlist.length) return;
+  const { videoId } = state.playlist[state.index];
+  player.cueVideoById(videoId);
+}
+
+function seekToExpected(seek_offset, play_start_server_time) {
+  // Approximate server->client offset using receipt time; good enough for MVP
+  const expected = seek_offset; // simple: assume negligible drift on join
+  player.seekTo(expected, true);
+}
+
+// YouTube IFrame API init
+window.onYouTubeIframeAPIReady = () => {
+  player = new YT.Player('player', {
+    width: 640, height: 360, videoId: 'dQw4w9WgXcQ',
+    playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
+    events: {
+      onReady: () => log("Player ready"),
+      onStateChange: (e) => {} // optional
+    }
+  });
+
+  // Drift corrector (every 3s)
+  setInterval(() => {
+    if (!state) return;
+    if (!state.is_playing || state.play_start_server_time == null) return;
+    // We don't have true server time; a production build would time-sync via PING/PONG.
+    // This MVP uses local monotonic as an approximation once PLAY is received.
+    // You can enhance: upon PONG(server_time) compute drift = server_time - client_mono.
+    const elapsed = (performance.now()/1000) - 0; // placeholder
+    const expected = state.seek_offset + (state.is_playing ? elapsed : 0);
+    const cur = player.getCurrentTime();
+    if (Math.abs(cur - expected) > 1.0) player.seekTo(expected, true);
+  }, 3000);
+};
+</script>
+</body>
+</html>

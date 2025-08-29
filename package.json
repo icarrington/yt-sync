@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "react-native-webview": "^13.16.0",
+    "react-native-youtube-iframe": "^2.4.1"
+  }
+}
